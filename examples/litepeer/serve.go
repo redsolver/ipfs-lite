@@ -13,7 +13,9 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -261,10 +263,35 @@ func (d *SkynetDatastore) GetSize(ctx context.Context, key ds.Key) (size int, er
 	d.RLock()
 	defer d.RUnlock()
 
-	if _, found := d.skynetMap[key]; found {
+	if v, found := d.skynetMap[key]; found {
+		u, err := url.Parse(v)
+		if err != nil {
+			return 0, err
+		}
 
-		return 262144, nil
+		q := u.Query()
+		rang, ok := q["range"]
+		if !ok {
+			return 0, fmt.Errorf("range not found in url %q", v)
+		}
+		if len(rang) != 1 {
+			return 0, fmt.Errorf("too many ranges in url %q", v)
+		}
+		ranges := strings.Split(rang[0], "-")
+		if len(ranges) != 2 {
+			return 0, fmt.Errorf("invalid range argument %q", rang[0])
+		}
 
+		start, err := strconv.Atoi(ranges[0])
+		if err != nil {
+			return 0, err
+		}
+		end, err := strconv.Atoi(ranges[1])
+		if err != nil {
+			return 0, err
+		}
+
+		return end - start, nil
 	}
 	if v, found := d.values[key]; found {
 
