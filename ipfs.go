@@ -149,7 +149,7 @@ func (p *Peer) setupBlockService() error {
 	}
 
 	bswapnet := network.NewFromIpfsHost(p.host, p.dht)
-	bswap := bitswap.New(p.ctx, bswapnet, p.bstore)
+	bswap := bitswap.New(p.ctx, bswapnet, p.bstore, bitswap.EngineBlockstoreWorkerCount(1024))
 	p.bserv = blockservice.New(p.bstore, bswap)
 	p.exch = bswap
 	return nil
