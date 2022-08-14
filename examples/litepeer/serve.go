@@ -192,8 +192,6 @@ func (d *SkynetDatastore) Put(ctx context.Context, key ds.Key, value []byte) (er
 // Sync implements Datastore.Sync
 func (d *SkynetDatastore) Sync(ctx context.Context, prefix ds.Key) error {
 	// fmt.Println("SkyDS.Sync")
-	d.Lock()
-	defer d.Unlock()
 	return nil
 }
 
@@ -248,12 +246,12 @@ func (d *SkynetDatastore) Has(ctx context.Context, key ds.Key) (exists bool, err
 		return true, nil
 	}
 
-	_, found2 := d.skynetMap[key]
-	if found2 {
+	_, found = d.skynetMap[key]
+	if found {
 		return true, nil
 	}
 
-	return found, nil
+	return false, nil
 }
 
 // GetSize implements Datastore.GetSize
@@ -280,8 +278,6 @@ func (d *SkynetDatastore) GetSize(ctx context.Context, key ds.Key) (size int, er
 // Delete implements Datastore.Delete
 func (d *SkynetDatastore) Delete(ctx context.Context, key ds.Key) (err error) {
 	fmt.Println("SkyDS.Delete")
-	d.Lock()
-	defer d.Unlock()
 	// delete(d.values, key)
 	// TODO Support Delete
 	return nil
@@ -315,8 +311,6 @@ func (d *SkynetDatastore) Query(ctx context.Context, q dsq.Query) (dsq.Results, 
 }
 
 func (d *SkynetDatastore) Batch(ctx context.Context) (ds.Batch, error) {
-	d.RLock()
-	defer d.RUnlock()
 	// fmt.Println("SkyDS.Batch")
 	return ds.NewBasicBatch(d), nil
 }
