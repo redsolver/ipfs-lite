@@ -5,11 +5,11 @@ package main
 
 import (
 	// "bytes"
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/multiformats/go-base32"
 	mh "github.com/multiformats/go-multihash"
@@ -112,8 +113,6 @@ func mainRet() error {
 	}
 
 	println(h.ID().Pretty())
-	println(h.ID().Loggable())
-	println(h.ID().String())
 
 	// NATPortMap() EnableAutoRelay(), libp2p.EnableNATService(), DisableRelay(), ConnectionManager(...
 
@@ -195,6 +194,8 @@ type SkynetDatastore struct {
 
 	values    map[ds.Key][]byte
 	skynetMap map[ds.Key]string
+
+	client http.Client // use a shared client to do TCP connection reusing or HTTP2 muxing
 }
 
 var _ ds.Datastore = (*SkynetDatastore)(nil)
@@ -208,6 +209,9 @@ func NewSkynetDatastore() (d *SkynetDatastore) {
 	return &SkynetDatastore{
 		skynetMap: make(map[ds.Key]string),
 		values:    make(map[ds.Key][]byte),
+		client: http.Client{
+			Timeout: 30 * time.Second,
+		},
 	}
 }
 
@@ -252,24 +256,39 @@ func (d *SkynetDatastore) Get(ctx context.Context, key ds.Key) (value []byte, er
 		if err != nil {
 			return nil, err
 		}
+		size, err := computeSizesFromRange(rang)
+		if err != nil {
+			return nil, err
+		}
 
-		client := &http.Client{}
 		req, err := http.NewRequest("GET", "https://siasky.net/"+u.Host, nil)
 		if err != nil {
 			return nil, err
 		}
 		req.Header.Set("range", "bytes="+rang)
-		resp, err := client.Do(req)
+		resp, err := d.client.Do(req)
 		if err != nil {
 			return nil, err
 		}
 		defer resp.Body.Close()
 
-		b, err := io.ReadAll(resp.Body)
-		// b, err := ioutil.ReadAll(resp.Body)  Go.1.15 and earlier
+		// use buffer to avoid growth (preallocate the neede memory)
+		var buf bytes.Buffer
+		buf.Grow(size)
+		_, err = buf.ReadFrom(resp.Body)
 		if err != nil {
 			return nil, err
 		}
+
+		if !(resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusPartialContent) {
+			return nil, fmt.Errorf("non 200 response code: %d; body: %q; uri: %q", resp.StatusCode, buf.String(), uri)
+		}
+
+		b := buf.Bytes()
+		if len(b) != size {
+			return nil, fmt.Errorf("unexpected response size, got: %d; expected: %d", len(b), size)
+		}
+
 		return b, nil
 	}
 	return nil, ds.ErrNotFound
@@ -325,16 +344,7 @@ func getRangeStringFromSkynetUrl(u *url.URL) (string, error) {
 	return rang[0], nil
 }
 
-func getSizeFromSkynetValue(v string) (size int, err error) {
-	u, err := url.Parse(v)
-	if err != nil {
-		return 0, err
-	}
-
-	rang, err := getRangeStringFromSkynetUrl(u)
-	if err != nil {
-		return 0, err
-	}
+func computeSizesFromRange(rang string) (int, error) {
 	ranges := strings.Split(rang, "-")
 	if len(ranges) != 2 {
 		return 0, fmt.Errorf(`invalid range argument %q; expected 2 parts after "-" split`, rang[0])
@@ -350,6 +360,19 @@ func getSizeFromSkynetValue(v string) (size int, err error) {
 	}
 
 	return end - start, nil
+}
+
+func getSizeFromSkynetValue(v string) (size int, err error) {
+	u, err := url.Parse(v)
+	if err != nil {
+		return 0, err
+	}
+
+	rang, err := getRangeStringFromSkynetUrl(u)
+	if err != nil {
+		return 0, err
+	}
+	return computeSizesFromRange(rang)
 }
 
 // Delete implements Datastore.Delete
