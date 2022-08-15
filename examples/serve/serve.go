@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -136,6 +137,8 @@ func mainRet() error {
 		keys = append(keys, strings.Split(k.String(), "/blocks/")[1])
 	}
 
+	const maxProvideWorkers = 512
+	tokens := make(chan struct{}, maxProvideWorkers)
 	for _, k := range keys {
 		// fmt.Println("PROVIDE", k)
 
@@ -148,12 +151,28 @@ func mainRet() error {
 			return err
 		}
 		c := cid.NewCidV0(mhash)
-		fmt.Println("PROVIDE", c)
-		dht.Provide(context.Background(), c, true)
-
+		tokens <- struct{}{} // this will block when tokens is full
+		go func() {
+			defer func() {
+				<-tokens // this will release one more space in tokens
+			}()
+			err := dht.Provide(context.Background(), c, true)
+			if err != nil {
+				fmt.Printf("Error providing %v: %v", c, err)
+				return
+			}
+			//fmt.Println("Provided", c)
+		}()
 	}
 
-	select {}
+	for i := maxProvideWorkers; i != 0; i-- {
+		// block until all provides freed their spot in the channel
+		tokens <- struct{}{}
+	}
+	fmt.Println("All provides finished")
+
+	runtime.Goexit() // Quit main to avoid exiting the program (if main return the program exit, if we kill the goroutine instead it will never return)
+	return nil
 }
 
 // AddParams contains all of the configurable parameters needed to specify the
