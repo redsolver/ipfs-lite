@@ -11,14 +11,12 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/multiformats/go-base32"
 	mh "github.com/multiformats/go-multihash"
@@ -42,6 +40,15 @@ import (
 )
 
 func main() {
+	err := mainRet()
+	if err != nil {
+		fmt.Println(err.Error())
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+func mainRet() error {
 	dbPath := "data/db.json"
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -51,15 +58,17 @@ func main() {
 
 	datastore := NewSkynetDatastore()
 	buf, err := ioutil.ReadFile(dbPath)
-
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	var m map[string]string
 
 	// Unmarshal or Decode the JSON to the interface.
-	json.Unmarshal(buf, &m)
+	err = json.Unmarshal(buf, &m)
+	if err != nil {
+		return err
+	}
 
 	for k, v := range m {
 		if strings.HasPrefix(v, "sia://") {
@@ -75,15 +84,19 @@ func main() {
 
 	// priv, _, err := crypto.GenerateKeyPair(crypto.RSA, 2048)
 	r, err := os.Open("key.txt")
-
-	priv, _, err := crypto.GenerateEd25519Key(r)
-
-	// crypto.KeyPairFromStdKey()
 	if err != nil {
-		panic(err)
+		return err
 	}
 
-	listen, _ := multiaddr.NewMultiaddr("/ip4/0.0.0.0/tcp/4005")
+	priv, _, err := crypto.GenerateEd25519Key(r)
+	if err != nil {
+		return err
+	}
+
+	listen, err := multiaddr.NewMultiaddr("/ip4/0.0.0.0/tcp/4005")
+	if err != nil {
+		return err
+	}
 
 	h, dht, err := ipfslite.SetupLibp2p(
 		ctx,
@@ -93,6 +106,9 @@ func main() {
 		datastore,
 		ipfslite.Libp2pOptionsExtra...,
 	)
+	if err != nil {
+		return err
+	}
 
 	println(h.ID().Pretty())
 	println(h.ID().Loggable())
@@ -100,15 +116,9 @@ func main() {
 
 	// NATPortMap() EnableAutoRelay(), libp2p.EnableNATService(), DisableRelay(), ConnectionManager(...
 
-	// dht.Ena
-
-	if err != nil {
-		panic(err)
-	}
-
 	lite, err := ipfslite.New(ctx, datastore, h, dht, nil)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	lite.Bootstrap(ipfslite.DefaultBootstrapPeers())
@@ -129,18 +139,21 @@ func main() {
 	for _, k := range keys {
 		// fmt.Println("PROVIDE", k)
 
-		dskey, _ := base32.RawStdEncoding.DecodeString(k)
-		mhash, _ := mh.Cast(dskey)
+		dskey, err := base32.RawStdEncoding.DecodeString(k)
+		if err != nil {
+			return err
+		}
+		mhash, err := mh.Cast(dskey)
+		if err != nil {
+			return err
+		}
 		c := cid.NewCidV0(mhash)
 		fmt.Println("PROVIDE", c)
 		dht.Provide(context.Background(), c, true)
 
 	}
 
-	for {
-		fmt.Println("Infinite Loop 1")
-		time.Sleep(time.Second * 30)
-	}
+	select {}
 }
 
 // AddParams contains all of the configurable parameters needed to specify the
@@ -186,7 +199,7 @@ func (d *SkynetDatastore) Put(ctx context.Context, key ds.Key, value []byte) (er
 	d.Lock()
 	defer d.Unlock()
 
-	d.values[key] = value
+	d.values[key] = value[:len(value):len(value)] // ensure capacity is unrecoverable to force allocations on append
 
 	return nil
 }
@@ -201,38 +214,44 @@ func (d *SkynetDatastore) Sync(ctx context.Context, prefix ds.Key) error {
 func (d *SkynetDatastore) Get(ctx context.Context, key ds.Key) (value []byte, err error) {
 	d.RLock()
 	val, found := d.values[key]
-	d.RUnlock()
 	if found {
+		d.RUnlock()
 		return val, nil
 	}
-
 	uri, found := d.skynetMap[key]
+	d.RUnlock()
 
 	if found {
 		fmt.Println("SkyDS.Get", key, uri)
 
-		parts := strings.Split(uri[6:], "?range=")
-
-		fmt.Println(parts)
-
-		client := &http.Client{}
-		req, _ := http.NewRequest("GET", "https://siasky.net/"+parts[0], nil)
-		req.Header.Set("range", "bytes="+parts[1])
-		resp, _ := client.Do(req)
-
+		u, err := url.Parse(uri)
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 
+		rang, err := getRangeStringFromSkynetUrl(u)
+		if err != nil {
+			return nil, err
+		}
+
+		client := &http.Client{}
+		req, err := http.NewRequest("GET", "https://siasky.net/"+u.Host, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("range", "bytes="+rang)
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
 		defer resp.Body.Close()
 
 		b, err := io.ReadAll(resp.Body)
 		// b, err := ioutil.ReadAll(resp.Body)  Go.1.15 and earlier
 		if err != nil {
-			log.Fatalln(err)
+			return nil, err
 		}
 		return b, nil
-
 	}
 	return nil, ds.ErrNotFound
 
@@ -275,23 +294,31 @@ func (d *SkynetDatastore) GetSize(ctx context.Context, key ds.Key) (size int, er
 	return -1, ds.ErrNotFound
 }
 
+func getRangeStringFromSkynetUrl(u *url.URL) (string, error) {
+	q := u.Query()
+	rang, ok := q["range"]
+	if !ok {
+		return "", fmt.Errorf("range not found in url %v", u.String())
+	}
+	if len(rang) != 1 {
+		return "", fmt.Errorf("too many ranges in url %q", u.String())
+	}
+	return rang[0], nil
+}
+
 func getSizeFromSkynetValue(v string) (size int, err error) {
 	u, err := url.Parse(v)
 	if err != nil {
 		return 0, err
 	}
 
-	q := u.Query()
-	rang, ok := q["range"]
-	if !ok {
-		return 0, fmt.Errorf("range not found in url %q", v)
+	rang, err := getRangeStringFromSkynetUrl(u)
+	if err != nil {
+		return 0, err
 	}
-	if len(rang) != 1 {
-		return 0, fmt.Errorf("too many ranges in url %q", v)
-	}
-	ranges := strings.Split(rang[0], "-")
+	ranges := strings.Split(rang, "-")
 	if len(ranges) != 2 {
-		return 0, fmt.Errorf("invalid range argument %q", rang[0])
+		return 0, fmt.Errorf(`invalid range argument %q; expected 2 parts after "-" split`, rang[0])
 	}
 
 	start, err := strconv.Atoi(ranges[0])
