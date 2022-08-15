@@ -4,7 +4,6 @@ package main
 // hash from the IPFS network.
 
 import (
-	// "bytes"
 	"bytes"
 	"context"
 	"encoding/hex"
@@ -23,19 +22,11 @@ import (
 	"github.com/multiformats/go-base32"
 	mh "github.com/multiformats/go-multihash"
 
-	// "io/ioutil"
-
 	ipfslite "github.com/hsanjuan/ipfs-lite"
 	"github.com/ipfs/go-cid"
 
-	// "github.com/ipfs/go-cid"
-
-	// "github.com/ipfs/go-cid"
-
 	crypto "github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/multiformats/go-multiaddr"
-
-	// "log"
 
 	ds "github.com/ipfs/go-datastore"
 	dsq "github.com/ipfs/go-datastore/query"
